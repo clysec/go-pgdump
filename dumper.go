@@ -34,7 +34,7 @@ func NewDumper(connectionString string, threads int) *Dumper {
 	return &Dumper{ConnectionString: connectionString, Parallels: threads, DumpVersion: dumpVersion}
 }
 
-func (d *Dumper) DumpDatabaseToStream(stream io.Writer, opts *TableOptions) error {
+func (d *Dumper) DumpDatabaseToWriter(stream io.Writer, opts *TableOptions) error {
 	db, err := sql.Open("postgres", d.ConnectionString)
 	if err != nil {
 		return err

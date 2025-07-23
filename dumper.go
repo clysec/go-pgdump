@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/csv"
 	"fmt"
+	"io"
 	"os"
 	"path"
 	"slices"
@@ -31,6 +32,62 @@ func NewDumper(connectionString string, threads int) *Dumper {
 		threads = 50
 	}
 	return &Dumper{ConnectionString: connectionString, Parallels: threads, DumpVersion: dumpVersion}
+}
+
+func (d *Dumper) DumpDatabaseToStream(stream io.Writer, opts *TableOptions) error {
+	db, err := sql.Open("postgres", d.ConnectionString)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	// Template variables
+	info := DumpInfo{
+		DumpVersion:   d.DumpVersion,
+		ServerVersion: getServerVersion(db),
+		CompleteTime:  time.Now().Format("2006-01-02 15:04:05 -0700 MST"),
+		ThreadsNumber: d.Parallels,
+	}
+
+	if err := writeHeader(stream, info); err != nil {
+		return err
+	}
+
+	tables, err := getTables(db, opts)
+	if err != nil {
+		return err
+	}
+
+	var (
+		wg sync.WaitGroup
+		mx sync.Mutex
+	)
+
+	chunks := slices.Chunk(tables, d.Parallels)
+	for chunk := range chunks {
+		wg.Add(len(chunk))
+		for _, table := range chunk {
+			//we can add the switch here for export and add a go func here.
+			go func(table string) {
+				defer wg.Done()
+				str, err := scriptTable(db, table)
+				if err != nil {
+					return
+				}
+				mx.Lock()
+
+				io.WriteString(stream, str)
+
+				mx.Unlock()
+			}(table)
+		}
+		wg.Wait()
+	}
+	if err := writeFooter(stream, info); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (d *Dumper) DumpDatabase(outputFile string, opts *TableOptions) error {

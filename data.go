@@ -42,7 +42,7 @@ func getTables(db *sql.DB, opts *TableOptions) ([]string, error) {
 		if err := rows.Scan(&tableName); err != nil {
 			return nil, err
 		}
-		if opts.Schema != "public" {
+		if opts != nil && opts.Schema != "public" {
 			tables = append(tables, opts.Schema+"."+tableName)
 		} else {
 			tables = append(tables, tableName)

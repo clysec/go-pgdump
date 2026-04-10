@@ -25,7 +25,7 @@ type Dumper struct {
 
 func NewDumper(connectionString string, threads int) *Dumper {
 	// Version number of go-pgdump, used in the template after a dump
-	dumpVersion := "0.2.1"
+	dumpVersion := "1.1.0"
 
 	// set a default value for Parallels if it is zero or less
 	if threads <= 0 {
@@ -34,7 +34,7 @@ func NewDumper(connectionString string, threads int) *Dumper {
 	return &Dumper{ConnectionString: connectionString, Parallels: threads, DumpVersion: dumpVersion}
 }
 
-func (d *Dumper) DumpDatabaseToWriter(stream io.Writer, opts *TableOptions) error {
+func (d *Dumper) DumpDatabaseToWriter(writer io.Writer, opts *TableOptions) error {
 	db, err := sql.Open("postgres", d.ConnectionString)
 	if err != nil {
 		return err
@@ -49,7 +49,7 @@ func (d *Dumper) DumpDatabaseToWriter(stream io.Writer, opts *TableOptions) erro
 		ThreadsNumber: d.Parallels,
 	}
 
-	if err := writeHeader(stream, info); err != nil {
+	if err := writeHeader(writer, info); err != nil {
 		return err
 	}
 
@@ -75,15 +75,13 @@ func (d *Dumper) DumpDatabaseToWriter(stream io.Writer, opts *TableOptions) erro
 					return
 				}
 				mx.Lock()
-
-				io.WriteString(stream, str)
-
+				io.WriteString(writer, str)
 				mx.Unlock()
 			}(table)
 		}
 		wg.Wait()
 	}
-	if err := writeFooter(stream, info); err != nil {
+	if err := writeFooter(writer, info); err != nil {
 		return err
 	}
 
@@ -91,63 +89,13 @@ func (d *Dumper) DumpDatabaseToWriter(stream io.Writer, opts *TableOptions) erro
 }
 
 func (d *Dumper) DumpDatabase(outputFile string, opts *TableOptions) error {
-	db, err := sql.Open("postgres", d.ConnectionString)
-	if err != nil {
-		return err
-	}
-	defer db.Close()
-
 	file, err := os.Create(outputFile)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
 
-	// Template variables
-	info := DumpInfo{
-		DumpVersion:   d.DumpVersion,
-		ServerVersion: getServerVersion(db),
-		CompleteTime:  time.Now().Format("2006-01-02 15:04:05 -0700 MST"),
-		ThreadsNumber: d.Parallels,
-	}
-
-	if err := writeHeader(file, info); err != nil {
-		return err
-	}
-
-	tables, err := getTables(db, opts)
-	if err != nil {
-		return err
-	}
-
-	var (
-		wg sync.WaitGroup
-		mx sync.Mutex
-	)
-
-	chunks := slices.Chunk(tables, d.Parallels)
-	for chunk := range chunks {
-		wg.Add(len(chunk))
-		for _, table := range chunk {
-			//we can add the switch here for export and add a go func here.
-			go func(table string) {
-				defer wg.Done()
-				str, err := scriptTable(db, table)
-				if err != nil {
-					return
-				}
-				mx.Lock()
-				file.WriteString(str)
-				mx.Unlock()
-			}(table)
-		}
-		wg.Wait()
-	}
-	if err := writeFooter(file, info); err != nil {
-		return err
-	}
-
-	return nil
+	return d.DumpDatabaseToWriter(file, opts)
 }
 
 func (d *Dumper) DumpDBToCSV(outputDIR, outputFile string, opts *TableOptions) error {
@@ -322,8 +270,12 @@ AND nsp.nspname = 'public';
 		}
 
 		// Construct the ALTER TABLE statement to add the primary key constraint.
-		pksSQL.WriteString(fmt.Sprintf("ALTER TABLE public.%s ADD CONSTRAINT %s %s;\n",
-			tableName, constraintName, constraintDef))
+		pksSQL.WriteString(fmt.Sprintf(
+			"ALTER TABLE %s ADD CONSTRAINT %s %s;\n",
+			escapeReservedName(tableName),
+			constraintName,
+			constraintDef,
+		))
 	}
 
 	if err := rows.Err(); err != nil {
